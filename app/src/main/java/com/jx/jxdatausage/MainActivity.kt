@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -23,12 +24,17 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
@@ -36,15 +42,20 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -52,10 +63,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jx.jxdatausage.data.DailyUsagePoint
 import com.jx.jxdatausage.data.PeriodItem
 import com.jx.jxdatausage.data.PeriodTab
+import com.jx.jxdatausage.data.SettingsRepository
 import com.jx.jxdatausage.ui.theme.JxDataUsageTheme
+import com.jx.jxdatausage.util.formatBytes
 import com.jx.jxdatausage.worker.HourlyWidgetRefreshWorker
 import kotlin.math.ceil
 import kotlin.math.roundToInt
+import java.time.LocalDate
+import java.time.ZoneId
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
@@ -66,10 +81,15 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         HourlyWidgetRefreshWorker.cancel(applicationContext)
         setContent {
-            JxDataUsageTheme {
+            val settingsRepository = remember { SettingsRepository(applicationContext) }
+            val themeMode by settingsRepository.themeMode.collectAsStateWithLifecycle(
+                initialValue = com.jx.jxdatausage.data.ThemeMode.SYSTEM
+            )
+            JxDataUsageTheme(themeMode = themeMode) {
                 val uiState by viewModel.uiState.collectAsStateWithLifecycle()
                 MainScreen(
                     state = uiState,
+                    onRefresh = viewModel::refreshPermissionState,
                     onSettingsClick = {
                         startActivity(Intent(this, SettingsActivity::class.java))
                     },
@@ -103,6 +123,7 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 private fun MainScreen(
     state: MainUiState,
+    onRefresh: () -> Unit,
     onSettingsClick: () -> Unit,
     onTabSelected: (PeriodTab) -> Unit,
     onPeriodClick: (PeriodItem) -> Unit,
@@ -115,6 +136,7 @@ private fun MainScreen(
         PeriodTab.YEARLY to stringResource(id = R.string.this_year)
     )
     val selectedPeriods = state.periods[state.selectedTab].orEmpty()
+    val isRefreshing = state.isDailyChartLoading || state.isMonthlyUsageLoading
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -132,41 +154,230 @@ private fun MainScreen(
             )
         }
     ) { innerPadding ->
-        Column(
+        PullToRefreshBox(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
+                .padding(innerPadding),
+            isRefreshing = isRefreshing,
+            onRefresh = onRefresh
         ) {
-            if (!state.hasUsageAccess) {
-                UsageAccessCard(onGrantUsageAccess = onGrantUsageAccess)
-            }
-            TabRow(
-                selectedTabIndex = tabs.indexOfFirst { it.first == state.selectedTab }
+            Column(
+                modifier = Modifier.fillMaxSize()
             ) {
-                tabs.forEach { (tab, label) ->
-                    Tab(
-                        selected = state.selectedTab == tab,
-                        onClick = { onTabSelected(tab) },
-                        text = { Text(text = label) }
-                    )
+                MonthlyDataPlanCard(
+                    state = state,
+                    onOpenSettings = onSettingsClick
+                )
+                if (!state.hasUsageAccess) {
+                    UsageAccessCard(onGrantUsageAccess = onGrantUsageAccess)
                 }
-            }
-
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                if (state.selectedTab == PeriodTab.DAILY) {
-                    item {
-                        DailyUsageChartCard(
-                            points = state.dailyChartPoints,
-                            isLoading = state.isDailyChartLoading
+                TabRow(
+                    selectedTabIndex = tabs.indexOfFirst { it.first == state.selectedTab }
+                ) {
+                    tabs.forEach { (tab, label) ->
+                        Tab(
+                            selected = state.selectedTab == tab,
+                            onClick = { onTabSelected(tab) },
+                            text = { Text(text = label) }
                         )
                     }
                 }
-                items(selectedPeriods, key = { it.id }) { period ->
-                    PeriodItemCard(period = period, onClick = { onPeriodClick(period) })
+
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (state.selectedTab == PeriodTab.DAILY) {
+                        item {
+                            DailyUsageChartCard(
+                                points = state.dailyChartPoints,
+                                isLoading = state.isDailyChartLoading
+                            )
+                        }
+                    }
+                    items(selectedPeriods, key = { it.id }) { period ->
+                        PeriodItemCard(period = period, onClick = { onPeriodClick(period) })
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MonthlyDataPlanCard(
+    state: MainUiState,
+    onOpenSettings: () -> Unit
+) {
+    val darkTheme = androidx.compose.foundation.isSystemInDarkTheme()
+    val cardShape = RoundedCornerShape(16.dp)
+    val isOverCap = state.monthlyProgress > 1f
+    val progressColor = if (isOverCap) Color(0xFFD32F2F) else Color(0xFF1565C0)
+    val containerColor = if (darkTheme) Color(0xFF17304A) else Color(0xFFEFF6FF)
+    val borderColor = if (darkTheme) Color(0xFF5D99D9) else Color(0xFF8EBEF5)
+    val gradientColors = if (darkTheme) {
+        listOf(Color(0xFF183652), Color(0xFF132C44))
+    } else {
+        listOf(Color(0xFFEAF3FF), Color(0xFFE6F8FF))
+    }
+    val titleColor = if (darkTheme) Color(0xFFEAF3FF) else Color(0xFF153D66)
+    val bodyColor = if (darkTheme) Color(0xFFD9E9FF) else Color(0xFF1C324C)
+    val markerColor = if (darkTheme) Color(0xFFC4DDFF) else Color(0xFF294E75)
+    val trackColor = if (darkTheme) Color(0xFF31587E) else Color(0xFFCCE3FA)
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        shape = cardShape,
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        border = androidx.compose.foundation.BorderStroke(1.dp, borderColor)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    brush = Brush.horizontalGradient(
+                        colors = gradientColors
+                    ),
+                    shape = cardShape
+                )
+                .padding(14.dp)
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = stringResource(id = R.string.monthly_plan_title),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = titleColor
+                    )
+                    if (state.monthlyCapBytes != null && state.monthlyCapBytes > 0L && state.hasUsageAccess && state.monthlyUsageError.isNullOrBlank()) {
+                        Text(
+                            text = String.format(Locale.getDefault(), "%.0f%%", state.monthlyProgress * 100f),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = progressColor
+                        )
+                    }
+                }
+
+                when {
+                    !state.hasUsageAccess -> {
+                        Text(
+                            text = stringResource(id = R.string.monthly_plan_permission_required),
+                            color = bodyColor
+                        )
+                    }
+
+                    state.isMonthlyUsageLoading -> {
+                        Text(
+                            text = stringResource(id = R.string.monthly_plan_loading),
+                            color = bodyColor
+                        )
+                    }
+
+                    !state.monthlyUsageError.isNullOrBlank() -> {
+                        Text(
+                            text = stringResource(
+                                id = R.string.monthly_plan_error_prefix,
+                                state.monthlyUsageError.orEmpty()
+                            ),
+                            color = bodyColor
+                        )
+                    }
+
+                    state.monthlyCapBytes == null || state.monthlyCapBytes <= 0L -> {
+                        Text(
+                            text = stringResource(
+                                id = R.string.monthly_plan_cap_unset,
+                                formatBytes(state.monthlyUsedBytes)
+                            ),
+                            color = bodyColor
+                        )
+                        TextButton(onClick = onOpenSettings) {
+                            Text(
+                                text = stringResource(id = R.string.set_total_usable_data),
+                                color = if (darkTheme) Color(0xFFC4DDFF) else Color(0xFF0E58B4)
+                            )
+                        }
+                    }
+
+                    else -> {
+                        val cap = state.monthlyCapBytes ?: 0L
+                        val percent = state.monthlyProgress * 100f
+                        val today = LocalDate.now(ZoneId.systemDefault())
+                        val todayFraction = (
+                            today.dayOfMonth.toFloat() / today.lengthOfMonth().toFloat()
+                            ).coerceIn(0f, 1f)
+                        Text(
+                            text = stringResource(
+                                id = R.string.monthly_plan_used_summary,
+                                formatBytes(state.monthlyUsedBytes),
+                                formatBytes(cap),
+                                String.format(Locale.getDefault(), "%.1f", percent)
+                            ),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = bodyColor
+                        )
+                        BoxWithConstraints(
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            val markerOffset = (maxWidth - 28.dp) * todayFraction
+                            LinearProgressIndicator(
+                                progress = { state.monthlyProgress.coerceIn(0f, 1f) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 20.dp)
+                                    .height(14.dp)
+                                    .clip(RoundedCornerShape(99.dp))
+                                    .border(1.dp, borderColor, RoundedCornerShape(99.dp)),
+                                color = progressColor,
+                                trackColor = trackColor
+                            )
+                            Column(
+                                modifier = Modifier
+                                    .offset(x = markerOffset)
+                                    .zIndex(1f),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    text = "${today.dayOfMonth}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = markerColor
+                                )
+                                Icon(
+                                    imageVector = Icons.Default.ArrowDropDown,
+                                    contentDescription = "Current day marker",
+                                    tint = markerColor,
+                                    modifier = Modifier
+                                        .offset(y = (-5).dp)
+                                        .height(18.dp)
+                                )
+                            }
+                        }
+                        if (state.monthlyProgress > 1f) {
+                            val overage = (state.monthlyUsedBytes - cap).coerceAtLeast(0L)
+                            Text(
+                                text = stringResource(
+                                    id = R.string.monthly_plan_over_by,
+                                    formatBytes(overage)
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFFFB4AB),
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                 }
             }
         }

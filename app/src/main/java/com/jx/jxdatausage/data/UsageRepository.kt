@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.net.ConnectivityManager
 import android.os.Process
+import com.jx.jxdatausage.util.computeMonthStartMs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -35,6 +36,7 @@ class UsageRepository(private val context: Context) {
                 packageName = resolvedApp.packageName,
                 appName = resolvedApp.appName,
                 iconRef = resolvedApp.packageName,
+                isSystemApp = resolvedApp.isSystemApp,
                 mobile = computed.mobile,
                 wifi = computed.wifi,
                 split = computed.split,
@@ -69,6 +71,7 @@ class UsageRepository(private val context: Context) {
                     packageName = resolvedApp.packageName,
                     appName = resolvedApp.appName,
                     iconRef = resolvedApp.packageName,
+                    isSystemApp = resolvedApp.isSystemApp,
                     mobile = computed.mobile,
                     wifi = computed.wifi,
                     split = computed.split,
@@ -125,6 +128,14 @@ class UsageRepository(private val context: Context) {
                 wifiBytes = wifiTotal
             )
         }
+    }
+
+    suspend fun getCurrentMonthCellUsage(
+        nowMs: Long = System.currentTimeMillis(),
+        zoneId: ZoneId = ZoneId.systemDefault()
+    ): Long = withContext(Dispatchers.IO) {
+        val monthStartMs = computeMonthStartMs(nowMs, zoneId)
+        queryDeviceTotal(ConnectivityManager.TYPE_MOBILE, monthStartMs, nowMs)
     }
 
     suspend fun buildDailyWidgetSnapshot(

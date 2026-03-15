@@ -7,6 +7,17 @@ enum class PeriodTab {
     YEARLY
 }
 
+enum class DataUnit {
+    MB,
+    GB
+}
+
+enum class ThemeMode {
+    LIGHT,
+    DARK,
+    SYSTEM
+}
+
 data class PeriodItem(
     val id: String,
     val label: String,
@@ -33,6 +44,7 @@ data class AppUsageRow(
     val packageName: String?,
     val appName: String,
     val iconRef: String?,
+    val isSystemApp: Boolean = false,
     val mobile: NetworkUsage,
     val wifi: NetworkUsage?,
     val split: SplitUsage,

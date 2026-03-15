@@ -31,11 +31,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -50,12 +52,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import com.jx.jxdatausage.data.AppUsageRow
 import com.jx.jxdatausage.data.PeriodTab
 import com.jx.jxdatausage.data.SortDirection
+import com.jx.jxdatausage.data.SettingsRepository
 import com.jx.jxdatausage.data.UsageSortMode
 import com.jx.jxdatausage.data.UsageRepository
 import com.jx.jxdatausage.data.sortUsageRows
 import com.jx.jxdatausage.ui.components.AppIconView
 import com.jx.jxdatausage.ui.components.UsageBars
 import com.jx.jxdatausage.ui.theme.JxDataUsageTheme
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
+
+private enum class DetailFilterMode(val label: String) {
+    APPS("Apps"),
+    SYSTEM("System"),
+    ALL("All")
+}
 
 class UsageDetailActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -69,31 +80,50 @@ class UsageDetailActivity : ComponentActivity() {
         val title = intent.getStringExtra(EXTRA_TITLE).orEmpty().ifBlank { periodTab.name }
 
         setContent {
-            JxDataUsageTheme {
+            val settingsRepository = remember { SettingsRepository(applicationContext) }
+            val themeMode by settingsRepository.themeMode.collectAsStateWithLifecycle(
+                initialValue = com.jx.jxdatausage.data.ThemeMode.SYSTEM
+            )
+            JxDataUsageTheme(themeMode = themeMode) {
                 val usageRepository = remember { UsageRepository(applicationContext) }
                 var showWifi by rememberSaveable { mutableStateOf(false) }
                 var isLoading by remember { mutableStateOf(true) }
+                var isRefreshing by remember { mutableStateOf(false) }
                 var usageRows by remember { mutableStateOf(emptyList<AppUsageRow>()) }
                 var errorMessage by remember { mutableStateOf<String?>(null) }
+                val coroutineScope = rememberCoroutineScope()
+
+                fun refreshUsage(showBlockingLoader: Boolean) {
+                    coroutineScope.launch {
+                        if (showBlockingLoader) {
+                            isLoading = true
+                            usageRows = emptyList()
+                        } else {
+                            isRefreshing = true
+                        }
+                        errorMessage = null
+                        runCatching {
+                            usageRepository.getUsageForRangeBatched(
+                                startMs = startMs,
+                                endMs = endMs,
+                                includeWifiInSort = true,
+                                batchSize = 20
+                            ).collect { partialRows ->
+                                usageRows = partialRows
+                                isLoading = false
+                            }
+                        }.onFailure { throwable ->
+                            if (usageRows.isEmpty()) {
+                                errorMessage = throwable.message ?: "Failed to load usage data"
+                            }
+                        }
+                        isLoading = false
+                        isRefreshing = false
+                    }
+                }
 
                 LaunchedEffect(startMs, endMs) {
-                    isLoading = true
-                    errorMessage = null
-                    usageRows = emptyList()
-                    runCatching {
-                        usageRepository.getUsageForRangeBatched(
-                            startMs = startMs,
-                            endMs = endMs,
-                            includeWifiInSort = true,
-                            batchSize = 20
-                        ).collect { partialRows ->
-                            usageRows = partialRows
-                            isLoading = false
-                        }
-                    }.onFailure { throwable ->
-                        errorMessage = throwable.message ?: "Failed to load usage data"
-                    }
-                    isLoading = false
+                    refreshUsage(true)
                 }
 
                 UsageDetailScreen(
@@ -102,7 +132,9 @@ class UsageDetailActivity : ComponentActivity() {
                     onShowWifiChanged = { showWifi = it },
                     usageRows = usageRows,
                     isLoading = isLoading,
+                    isRefreshing = isRefreshing,
                     errorMessage = errorMessage,
+                    onRefresh = { refreshUsage(false) },
                     onBack = { finish() }
                 )
             }
@@ -139,21 +171,31 @@ private fun UsageDetailScreen(
     onShowWifiChanged: (Boolean) -> Unit,
     usageRows: List<AppUsageRow>,
     isLoading: Boolean,
+    isRefreshing: Boolean,
     errorMessage: String?,
+    onRefresh: () -> Unit,
     onBack: () -> Unit
 ) {
     var sortMode by remember { mutableStateOf(UsageSortMode.TOTAL) }
     var sortDirection by remember { mutableStateOf(SortDirection.DESC) }
-    val sortedRows = remember(usageRows, showWifi, sortMode, sortDirection) {
+    var filterMode by remember { mutableStateOf(DetailFilterMode.ALL) }
+    val filteredRows = remember(usageRows, filterMode) {
+        when (filterMode) {
+            DetailFilterMode.APPS -> usageRows.filterNot { it.isSystemApp }
+            DetailFilterMode.SYSTEM -> usageRows.filter { it.isSystemApp }
+            DetailFilterMode.ALL -> usageRows
+        }
+    }
+    val sortedRows = remember(filteredRows, showWifi, sortMode, sortDirection) {
         sortUsageRows(
-            rows = usageRows,
+            rows = filteredRows,
             sortMode = sortMode,
             includeWifi = showWifi,
             sortDirection = sortDirection
         )
     }
-    val maxMobile = usageRows.maxOfOrNull { it.mobile.totalBytes } ?: 1L
-    val maxWifi = usageRows.maxOfOrNull { it.wifi?.totalBytes ?: 0L } ?: 1L
+    val maxMobile = sortedRows.maxOfOrNull { it.mobile.totalBytes } ?: 1L
+    val maxWifi = sortedRows.maxOfOrNull { it.wifi?.totalBytes ?: 0L } ?: 1L
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
@@ -170,75 +212,107 @@ private fun UsageDetailScreen(
             )
         }
     ) { innerPadding ->
-        if (isLoading) {
-            Text(
-                text = "Loading usage...",
-                modifier = Modifier.padding(innerPadding).padding(16.dp)
-            )
-            return@Scaffold
-        }
-
-        if (!errorMessage.isNullOrBlank()) {
-            Text(
-                text = errorMessage,
-                modifier = Modifier.padding(innerPadding).padding(16.dp)
-            )
-            return@Scaffold
-        }
-
-        if (sortedRows.isEmpty()) {
-            Text(
-                text = "No usage data found for this period.",
-                modifier = Modifier.padding(innerPadding).padding(16.dp)
-            )
-            return@Scaffold
-        }
-
-        LazyColumn(
+        PullToRefreshBox(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
-            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            isRefreshing = isRefreshing,
+            onRefresh = onRefresh
         ) {
-            item {
-                SortSection(
-                    selectedMode = sortMode,
-                    sortDirection = sortDirection,
-                    showWifi = showWifi,
-                    onSortModeSelected = { sortMode = it },
-                    onSortDirectionToggle = {
-                        sortDirection = if (sortDirection == SortDirection.DESC) {
-                            SortDirection.ASC
-                        } else {
-                            SortDirection.DESC
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                when {
+                    isLoading -> {
+                        item {
+                            StatusMessage(message = "Loading usage...")
                         }
-                    },
-                    onShowWifiToggle = { onShowWifiChanged(!showWifi) }
-                )
-            }
-            items(items = sortedRows, key = { "${it.uid}-${it.packageName}" }) { row ->
-                AppUsageCard(
-                    row = row,
-                    showWifi = showWifi,
-                    maxMobile = maxMobile,
-                    maxWifi = maxWifi
-                )
+                    }
+
+                    !errorMessage.isNullOrBlank() -> {
+                        item {
+                            StatusMessage(message = errorMessage)
+                        }
+                    }
+
+                    sortedRows.isEmpty() -> {
+                        item {
+                            StatusMessage(message = "No usage data found for this period.")
+                        }
+                    }
+
+                    else -> {
+                        item {
+                            SortSection(
+                                selectedMode = sortMode,
+                                sortDirection = sortDirection,
+                                filterMode = filterMode,
+                                showWifi = showWifi,
+                                onSortModeSelected = { sortMode = it },
+                                onSortDirectionToggle = {
+                                    sortDirection = if (sortDirection == SortDirection.DESC) {
+                                        SortDirection.ASC
+                                    } else {
+                                        SortDirection.DESC
+                                    }
+                                },
+                                onFilterModeSelected = { filterMode = it },
+                                onShowWifiToggle = { onShowWifiChanged(!showWifi) }
+                            )
+                        }
+                        if (sortedRows.isEmpty()) {
+                            item {
+                                StatusMessage(
+                                    message = when (filterMode) {
+                                        DetailFilterMode.APPS -> "No app entries found for this period."
+                                        DetailFilterMode.SYSTEM -> "No system entries found for this period."
+                                        DetailFilterMode.ALL -> "No usage data found for this period."
+                                    }
+                                )
+                            }
+                        } else {
+                            items(items = sortedRows, key = { "${it.uid}-${it.packageName}" }) { row ->
+                                AppUsageCard(
+                                    row = row,
+                                    showWifi = showWifi,
+                                    maxMobile = maxMobile,
+                                    maxWifi = maxWifi
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
+private fun StatusMessage(message: String?) {
+    Text(
+        text = message.orEmpty(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        style = MaterialTheme.typography.bodyLarge
+    )
+}
+
+@Composable
 private fun SortSection(
     selectedMode: UsageSortMode,
     sortDirection: SortDirection,
+    filterMode: DetailFilterMode,
     showWifi: Boolean,
     onSortModeSelected: (UsageSortMode) -> Unit,
     onSortDirectionToggle: () -> Unit,
+    onFilterModeSelected: (DetailFilterMode) -> Unit,
     onShowWifiToggle: () -> Unit
 ) {
     val sortModes = remember { UsageSortMode.entries }
+    val filterModes = remember { DetailFilterMode.entries }
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -286,6 +360,22 @@ private fun SortSection(
                 )
             }
         }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            filterModes.forEach { mode ->
+                SmallSortButton(
+                    text = mode.label,
+                    selected = mode == filterMode,
+                    onClick = { onFilterModeSelected(mode) },
+                    horizontalPadding = 8.dp,
+                    verticalPadding = 4.dp,
+                    textSizeSp = 10f
+                )
+            }
+        }
     }
 }
 
@@ -301,8 +391,10 @@ private fun SmallSortButton(
     textSizeSp: Float = 12f
 ) {
     val shape = RoundedCornerShape(10.dp)
-    val borderColor = if (selected) Color(0xFFD38B8B) else Color(0xFF9E8F8F)
-    val background = if (selected) Color(0xFFF3D1D1) else Color.Transparent
+    val colorScheme = MaterialTheme.colorScheme
+    val borderColor = if (selected) colorScheme.primary else colorScheme.outline
+    val background = if (selected) colorScheme.primaryContainer else colorScheme.surface
+    val contentColor = if (selected) colorScheme.onPrimaryContainer else colorScheme.onSurface
     Row(
         modifier = modifier
             .clip(shape)
@@ -317,14 +409,16 @@ private fun SmallSortButton(
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                modifier = Modifier.width(12.dp)
+                modifier = Modifier.width(12.dp),
+                tint = contentColor
             )
         }
         Text(
             text = text,
             fontSize = textSizeSp.sp,
             maxLines = 1,
-            textAlign = TextAlign.Center
+            textAlign = TextAlign.Center,
+            color = contentColor
         )
     }
 }
