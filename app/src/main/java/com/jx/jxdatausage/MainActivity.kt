@@ -419,8 +419,8 @@ private fun DailyUsageChartCard(
     val cellColor = Color(0xFF1976D2)
     val wifiColor = Color(0xFFD32F2F)
     val todayHighlightColor = MaterialTheme.colorScheme.primary
-    val mutedCellColor = lerp(cellColor, MaterialTheme.colorScheme.surface, 0.38f)
-    val mutedWifiColor = lerp(wifiColor, MaterialTheme.colorScheme.surface, 0.38f)
+    val mutedCellColor = lerp(cellColor, MaterialTheme.colorScheme.surface, 0.58f)
+    val mutedWifiColor = lerp(wifiColor, MaterialTheme.colorScheme.surface, 0.58f)
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
@@ -512,11 +512,14 @@ private fun DailyUsageChartCard(
                     for (step in steps downTo 0) {
                         val value = (chartMaxMb / steps * step).roundToInt()
                         Text(
-                            text = if (step == steps) "$value MB" else value.toString(),
+                            text = if (step == steps) "$value\nMB" else value.toString(),
                             modifier = Modifier.fillMaxWidth(),
                             textAlign = TextAlign.End,
-                            style = MaterialTheme.typography.labelSmall,
-                            maxLines = 1
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 8.sp,
+                                lineHeight = 8.sp
+                            ),
+                            maxLines = 2
                         )
                     }
                 }
@@ -558,7 +561,7 @@ private fun DailyUsageChartCard(
                                     modifier = Modifier
                                         .weight(1f)
                                         .fillMaxSize(),
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterHorizontally),
                                     verticalAlignment = Alignment.Bottom
                                 ) {
                                     BarWithValue(
@@ -645,19 +648,20 @@ private fun BarWithValue(
         )
     )
     Column(
-        modifier = Modifier.width(20.dp),
+        modifier = Modifier.width(21.dp),
         verticalArrangement = Arrangement.Bottom,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
             text = formatChartMb(valueMb),
             style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = 8.sp,
-                lineHeight = 8.sp
+                fontSize = 7.sp,
+                lineHeight = 7.sp,
+                letterSpacing = (-0.2).sp
             ),
             maxLines = 1,
             softWrap = false,
-            overflow = TextOverflow.Clip
+            overflow = TextOverflow.Visible
         )
         Box(
             modifier = Modifier
