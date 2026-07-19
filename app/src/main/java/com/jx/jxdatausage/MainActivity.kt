@@ -50,6 +50,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -90,6 +91,7 @@ class MainActivity : ComponentActivity() {
                 MainScreen(
                     state = uiState,
                     onRefresh = viewModel::refreshPermissionState,
+                    onDailyChartRetry = viewModel::refreshDailyChart,
                     onSettingsClick = {
                         startActivity(Intent(this, SettingsActivity::class.java))
                     },
@@ -124,6 +126,7 @@ class MainActivity : ComponentActivity() {
 private fun MainScreen(
     state: MainUiState,
     onRefresh: () -> Unit,
+    onDailyChartRetry: () -> Unit,
     onSettingsClick: () -> Unit,
     onTabSelected: (PeriodTab) -> Unit,
     onPeriodClick: (PeriodItem) -> Unit,
@@ -192,7 +195,9 @@ private fun MainScreen(
                         item {
                             DailyUsageChartCard(
                                 points = state.dailyChartPoints,
-                                isLoading = state.isDailyChartLoading
+                                isLoading = state.isDailyChartLoading,
+                                errorMessage = state.dailyChartError,
+                                onRetry = onDailyChartRetry
                             )
                         }
                     }
@@ -210,21 +215,20 @@ private fun MonthlyDataPlanCard(
     state: MainUiState,
     onOpenSettings: () -> Unit
 ) {
-    val darkTheme = androidx.compose.foundation.isSystemInDarkTheme()
+    val colorScheme = MaterialTheme.colorScheme
     val cardShape = RoundedCornerShape(16.dp)
     val isOverCap = state.monthlyProgress > 1f
-    val progressColor = if (isOverCap) Color(0xFFD32F2F) else Color(0xFF1565C0)
-    val containerColor = if (darkTheme) Color(0xFF17304A) else Color(0xFFEFF6FF)
-    val borderColor = if (darkTheme) Color(0xFF5D99D9) else Color(0xFF8EBEF5)
-    val gradientColors = if (darkTheme) {
-        listOf(Color(0xFF183652), Color(0xFF132C44))
-    } else {
-        listOf(Color(0xFFEAF3FF), Color(0xFFE6F8FF))
-    }
-    val titleColor = if (darkTheme) Color(0xFFEAF3FF) else Color(0xFF153D66)
-    val bodyColor = if (darkTheme) Color(0xFFD9E9FF) else Color(0xFF1C324C)
-    val markerColor = if (darkTheme) Color(0xFFC4DDFF) else Color(0xFF294E75)
-    val trackColor = if (darkTheme) Color(0xFF31587E) else Color(0xFFCCE3FA)
+    val progressColor = if (isOverCap) colorScheme.error else colorScheme.primary
+    val containerColor = colorScheme.primaryContainer
+    val borderColor = colorScheme.outline
+    val gradientColors = listOf(
+        lerp(colorScheme.primaryContainer, colorScheme.surface, 0.12f),
+        lerp(colorScheme.primaryContainer, colorScheme.surface, 0.32f)
+    )
+    val titleColor = colorScheme.onPrimaryContainer
+    val bodyColor = colorScheme.onPrimaryContainer
+    val markerColor = colorScheme.onPrimaryContainer
+    val trackColor = lerp(colorScheme.primaryContainer, colorScheme.primary, 0.22f)
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -305,7 +309,7 @@ private fun MonthlyDataPlanCard(
                         TextButton(onClick = onOpenSettings) {
                             Text(
                                 text = stringResource(id = R.string.set_total_usable_data),
-                                color = if (darkTheme) Color(0xFFC4DDFF) else Color(0xFF0E58B4)
+                                color = colorScheme.primary
                             )
                         }
                     }
@@ -373,7 +377,7 @@ private fun MonthlyDataPlanCard(
                                     formatBytes(overage)
                                 ),
                                 style = MaterialTheme.typography.bodySmall,
-                                color = Color(0xFFFFB4AB),
+                                color = colorScheme.error,
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -408,10 +412,15 @@ private fun UsageAccessCard(onGrantUsageAccess: () -> Unit) {
 @Composable
 private fun DailyUsageChartCard(
     points: List<DailyUsagePoint>,
-    isLoading: Boolean
+    isLoading: Boolean,
+    errorMessage: String?,
+    onRetry: () -> Unit
 ) {
     val cellColor = Color(0xFF1976D2)
     val wifiColor = Color(0xFFD32F2F)
+    val todayHighlightColor = MaterialTheme.colorScheme.primary
+    val mutedCellColor = lerp(cellColor, MaterialTheme.colorScheme.surface, 0.38f)
+    val mutedWifiColor = lerp(wifiColor, MaterialTheme.colorScheme.surface, 0.38f)
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
@@ -419,15 +428,26 @@ private fun DailyUsageChartCard(
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text(
-                text = "DAILY USAGE",
-                modifier = Modifier.fillMaxWidth(),
-                textAlign = TextAlign.Center,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
-            )
+            Box(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "DAILY USAGE",
+                    modifier = Modifier.align(Alignment.Center),
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                if (!isLoading && points.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier.align(Alignment.CenterEnd),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        LegendItem(label = "Cell", color = cellColor)
+                        LegendItem(label = "WiFi", color = wifiColor)
+                    }
+                }
+            }
 
-            if (isLoading) {
+            if (isLoading && points.isEmpty()) {
                 Text(
                     text = "Loading chart...",
                     modifier = Modifier
@@ -436,6 +456,24 @@ private fun DailyUsageChartCard(
                     textAlign = TextAlign.Center
                 )
                 return@Column
+            }
+            if (!errorMessage.isNullOrBlank()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = stringResource(id = R.string.daily_chart_error, errorMessage),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    TextButton(onClick = onRetry) {
+                        Text(text = stringResource(id = R.string.retry))
+                    }
+                }
+                if (points.isEmpty()) return@Column
             }
             if (points.isEmpty()) {
                 Text(
@@ -447,20 +485,6 @@ private fun DailyUsageChartCard(
                 )
                 return@Column
             }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center
-            ) {
-                LegendItem(label = "Cell", color = cellColor)
-                LegendItem(label = "WiFi", color = wifiColor)
-            }
-            Text(
-                text = "Unit: GB",
-                modifier = Modifier.fillMaxWidth(),
-                textAlign = TextAlign.Center,
-                style = MaterialTheme.typography.labelSmall
-            )
 
             val cellMbPoints = points.map { it.cellBytes / (1024f * 1024f) }
             val wifiMbPoints = points.map { it.wifiBytes / (1024f * 1024f) }
@@ -479,7 +503,7 @@ private fun DailyUsageChartCard(
             ) {
                 Column(
                     modifier = Modifier
-                        .width(34.dp)
+                        .width(50.dp)
                         .fillMaxSize()
                         .padding(bottom = 24.dp),
                     verticalArrangement = Arrangement.SpaceBetween,
@@ -488,8 +512,11 @@ private fun DailyUsageChartCard(
                     for (step in steps downTo 0) {
                         val value = (chartMaxMb / steps * step).roundToInt()
                         Text(
-                            text = value.toString(),
-                            style = MaterialTheme.typography.labelSmall
+                            text = if (step == steps) "$value MB" else value.toString(),
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.End,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1
                         )
                     }
                 }
@@ -525,6 +552,8 @@ private fun DailyUsageChartCard(
                                 val wifiMb = point.wifiBytes / (1024f * 1024f)
                                 val cellFraction = (cellMb / chartMaxMb).coerceIn(0f, 1f)
                                 val wifiFraction = (wifiMb / chartMaxMb).coerceIn(0f, 1f)
+                                val pointCellColor = if (point.isToday) cellColor else mutedCellColor
+                                val pointWifiColor = if (point.isToday) wifiColor else mutedWifiColor
                                 Row(
                                     modifier = Modifier
                                         .weight(1f)
@@ -533,14 +562,14 @@ private fun DailyUsageChartCard(
                                     verticalAlignment = Alignment.Bottom
                                 ) {
                                     BarWithValue(
-                                        valueGb = point.cellBytes / (1024.0 * 1024.0 * 1024.0),
+                                        valueMb = cellMb.toDouble(),
                                         barHeight = chartHeight * cellFraction,
-                                        color = cellColor
+                                        color = pointCellColor
                                     )
                                     BarWithValue(
-                                        valueGb = point.wifiBytes / (1024.0 * 1024.0 * 1024.0),
+                                        valueMb = wifiMb.toDouble(),
                                         barHeight = chartHeight * wifiFraction,
-                                        color = wifiColor
+                                        color = pointWifiColor
                                     )
                                 }
                             }
@@ -558,7 +587,13 @@ private fun DailyUsageChartCard(
                                 text = point.label,
                                 modifier = Modifier.weight(1f),
                                 textAlign = TextAlign.Center,
-                                style = MaterialTheme.typography.labelSmall
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = if (point.isToday) FontWeight.Bold else FontWeight.Normal,
+                                color = if (point.isToday) {
+                                    todayHighlightColor
+                                } else {
+                                    Color.Unspecified
+                                }
                             )
                         }
                     }
@@ -587,17 +622,35 @@ private fun LegendItem(label: String, color: Color) {
 
 @Composable
 private fun BarWithValue(
-    valueGb: Double,
+    valueMb: Double,
     barHeight: Dp,
     color: Color
 ) {
+    val barShape = RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp)
+    val metallicGradient = Brush.verticalGradient(
+        colorStops = arrayOf(
+            0f to lerp(color, Color.White, 0.38f),
+            0.18f to lerp(color, Color.White, 0.12f),
+            0.48f to color,
+            0.72f to lerp(color, Color.Black, 0.12f),
+            1f to lerp(color, Color.Black, 0.32f)
+        )
+    )
+    val sideHighlight = Brush.horizontalGradient(
+        colorStops = arrayOf(
+            0f to Color.White.copy(alpha = 0.32f),
+            0.22f to Color.White.copy(alpha = 0.10f),
+            0.55f to Color.Transparent,
+            1f to Color.Black.copy(alpha = 0.18f)
+        )
+    )
     Column(
         modifier = Modifier.width(20.dp),
         verticalArrangement = Arrangement.Bottom,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = String.format(Locale.getDefault(), "%.2f", valueGb),
+            text = formatChartMb(valueMb),
             style = MaterialTheme.typography.labelSmall.copy(
                 fontSize = 8.sp,
                 lineHeight = 8.sp
@@ -611,9 +664,25 @@ private fun BarWithValue(
                 .padding(top = 2.dp)
                 .width(8.dp)
                 .height(barHeight)
-                .background(color)
+                .clip(barShape)
+                .background(metallicGradient)
+                .background(sideHighlight)
+                .border(
+                    width = 0.5.dp,
+                    color = lerp(color, Color.Black, 0.28f),
+                    shape = barShape
+                )
         )
     }
+}
+
+private fun formatChartMb(valueMb: Double): String {
+    val pattern = when {
+        valueMb >= 100.0 -> "%.0f"
+        valueMb >= 10.0 -> "%.1f"
+        else -> "%.2f"
+    }
+    return String.format(Locale.getDefault(), pattern, valueMb)
 }
 
 @Composable

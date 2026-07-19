@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 data class MainUiState(
@@ -23,6 +25,7 @@ data class MainUiState(
     val hasUsageAccess: Boolean = false,
     val dailyChartPoints: List<DailyUsagePoint> = emptyList(),
     val isDailyChartLoading: Boolean = false,
+    val dailyChartError: String? = null,
     val monthlyUsedBytes: Long = 0L,
     val monthlyCapBytes: Long? = null,
     val monthlyProgress: Float = 0f,
@@ -34,6 +37,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val appContext = getApplication<Application>().applicationContext
     private val usageRepository = UsageRepository(appContext)
     private val settingsRepository = SettingsRepository(appContext)
+    private var dailyChartJob: Job? = null
+    private var monthlyUsageJob: Job? = null
     private val periodsByTab = PeriodTab.entries.associateWith { tab ->
         PeriodGenerator.generatePeriods(tab)
     }
@@ -47,7 +52,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         observeMonthlyCap()
-        refreshPermissionState()
     }
 
     fun selectTab(tab: PeriodTab) {
@@ -61,10 +65,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             refreshDailyChart()
             refreshMonthlyUsage()
         } else {
+            dailyChartJob?.cancel()
+            monthlyUsageJob?.cancel()
             _uiState.update { current ->
                 current.copy(
                     dailyChartPoints = emptyList(),
                     isDailyChartLoading = false,
+                    dailyChartError = null,
                     isMonthlyUsageLoading = false,
                     monthlyUsageError = null
                 )
@@ -85,30 +92,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun refreshDailyChart() {
-        viewModelScope.launch {
-            _uiState.update { current -> current.copy(isDailyChartLoading = true) }
-            val points = usageRepository.getRecentDailyBreakdown(days = 7)
+    fun refreshDailyChart() {
+        dailyChartJob?.cancel()
+        dailyChartJob = viewModelScope.launch {
             _uiState.update { current ->
-                current.copy(
-                    dailyChartPoints = points,
-                    isDailyChartLoading = false
-                )
+                current.copy(isDailyChartLoading = true, dailyChartError = null)
+            }
+            try {
+                val points = usageRepository.getRecentDailyBreakdown(days = 7)
+                _uiState.update { current ->
+                    current.copy(
+                        dailyChartPoints = points,
+                        isDailyChartLoading = false,
+                        dailyChartError = null
+                    )
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (throwable: Throwable) {
+                _uiState.update { current ->
+                    current.copy(
+                        isDailyChartLoading = false,
+                        dailyChartError = throwable.message ?: "Unable to load daily usage"
+                    )
+                }
             }
         }
     }
 
     private fun refreshMonthlyUsage() {
-        viewModelScope.launch {
+        monthlyUsageJob?.cancel()
+        monthlyUsageJob = viewModelScope.launch {
             _uiState.update { current ->
                 current.copy(
                     isMonthlyUsageLoading = true,
                     monthlyUsageError = null
                 )
             }
-            runCatching {
-                usageRepository.getCurrentMonthCellUsage()
-            }.onSuccess { usedBytes ->
+            try {
+                val usedBytes = usageRepository.getCurrentMonthCellUsage()
                 _uiState.update { current ->
                     current.copy(
                         monthlyUsedBytes = usedBytes,
@@ -117,7 +139,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         monthlyUsageError = null
                     )
                 }
-            }.onFailure { throwable ->
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (throwable: Throwable) {
                 _uiState.update { current ->
                     current.copy(
                         isMonthlyUsageLoading = false,

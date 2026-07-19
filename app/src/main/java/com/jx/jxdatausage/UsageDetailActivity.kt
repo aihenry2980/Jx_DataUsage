@@ -60,6 +60,8 @@ import com.jx.jxdatausage.ui.components.AppIconView
 import com.jx.jxdatausage.ui.components.UsageBars
 import com.jx.jxdatausage.ui.theme.JxDataUsageTheme
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 private enum class DetailFilterMode(val label: String) {
@@ -91,10 +93,12 @@ class UsageDetailActivity : ComponentActivity() {
                 var isRefreshing by remember { mutableStateOf(false) }
                 var usageRows by remember { mutableStateOf(emptyList<AppUsageRow>()) }
                 var errorMessage by remember { mutableStateOf<String?>(null) }
+                var refreshJob by remember { mutableStateOf<Job?>(null) }
                 val coroutineScope = rememberCoroutineScope()
 
                 fun refreshUsage(showBlockingLoader: Boolean) {
-                    coroutineScope.launch {
+                    refreshJob?.cancel()
+                    refreshJob = coroutineScope.launch {
                         if (showBlockingLoader) {
                             isLoading = true
                             usageRows = emptyList()
@@ -102,7 +106,7 @@ class UsageDetailActivity : ComponentActivity() {
                             isRefreshing = true
                         }
                         errorMessage = null
-                        runCatching {
+                        try {
                             usageRepository.getUsageForRangeBatched(
                                 startMs = startMs,
                                 endMs = endMs,
@@ -112,7 +116,9 @@ class UsageDetailActivity : ComponentActivity() {
                                 usageRows = partialRows
                                 isLoading = false
                             }
-                        }.onFailure { throwable ->
+                        } catch (cancellation: CancellationException) {
+                            throw cancellation
+                        } catch (throwable: Throwable) {
                             if (usageRows.isEmpty()) {
                                 errorMessage = throwable.message ?: "Failed to load usage data"
                             }
@@ -196,6 +202,12 @@ private fun UsageDetailScreen(
     }
     val maxMobile = sortedRows.maxOfOrNull { it.mobile.totalBytes } ?: 1L
     val maxWifi = sortedRows.maxOfOrNull { it.wifi?.totalBytes ?: 0L } ?: 1L
+    val maxMobileBackground = sortedRows.maxOfOrNull {
+        it.mobileSplit.backgroundRx + it.mobileSplit.backgroundTx
+    } ?: 1L
+    val maxWifiBackground = sortedRows.maxOfOrNull {
+        it.wifiSplit.backgroundRx + it.wifiSplit.backgroundTx
+    } ?: 1L
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
@@ -278,7 +290,9 @@ private fun UsageDetailScreen(
                                     row = row,
                                     showWifi = showWifi,
                                     maxMobile = maxMobile,
-                                    maxWifi = maxWifi
+                                    maxWifi = maxWifi,
+                                    maxMobileBackground = maxMobileBackground,
+                                    maxWifiBackground = maxWifiBackground
                                 )
                             }
                         }
@@ -428,7 +442,9 @@ private fun AppUsageCard(
     row: AppUsageRow,
     showWifi: Boolean,
     maxMobile: Long,
-    maxWifi: Long
+    maxWifi: Long,
+    maxMobileBackground: Long,
+    maxWifiBackground: Long
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -459,6 +475,7 @@ private fun AppUsageCard(
                     usage = row.mobile,
                     split = row.mobileSplit,
                     maxValue = maxMobile,
+                    maxBackgroundValue = maxMobileBackground,
                     title = "Mobile"
                 )
                 if (showWifi && row.wifi != null) {
@@ -466,6 +483,7 @@ private fun AppUsageCard(
                         usage = row.wifi,
                         split = row.wifiSplit,
                         maxValue = maxWifi,
+                        maxBackgroundValue = maxWifiBackground,
                         title = "WiFi"
                     )
                 }

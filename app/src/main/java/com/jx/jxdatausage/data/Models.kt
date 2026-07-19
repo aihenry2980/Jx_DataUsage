@@ -73,5 +73,6 @@ data class WidgetSnapshot(
 data class DailyUsagePoint(
     val label: String,
     val cellBytes: Long,
-    val wifiBytes: Long
+    val wifiBytes: Long,
+    val isToday: Boolean = false
 )

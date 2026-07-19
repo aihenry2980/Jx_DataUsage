@@ -125,7 +125,8 @@ class UsageRepository(private val context: Context) {
             DailyUsagePoint(
                 label = day.format(dayLabelFormatter),
                 cellBytes = cellTotal,
-                wifiBytes = wifiTotal
+                wifiBytes = wifiTotal,
+                isToday = day == today
             )
         }
     }

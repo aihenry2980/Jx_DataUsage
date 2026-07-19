@@ -33,4 +33,6 @@
     <string name="theme_system">System</string>
     <string name="save">Save</string>
     <string name="clear">Clear</string>
+    <string name="daily_chart_error">Unable to load daily usage: %1$s</string>
+    <string name="retry">Retry</string>
 </resources>
